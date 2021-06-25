@@ -17,22 +17,28 @@ def hier_prox_group(skip, W, *, lambda_, M, lambda_bar=0):
 
 
     m = tf.range(0.0, output_size + 1.0, dtype=tf.float32)
-    q = M / (1 +m*M**2)
+    q = 1/ (1 +m*M**2)
 
-    norm_skip = tf.norm(skip, axis=1, ord=2)
-    norm_skip = tf.expand_dims(norm_skip, 1)
+    norm_skip = tf.expand_dims(tf.norm(skip, axis=1, ord=2), axis=1)
 
-    w = q*tf_soft_threshold(lambda_, norm_skip + M*cumulative_sum)
+    #w = q*tf_soft_threshold(lambda_, norm_skip + M*cumulative_sum)
+
+    t = q* tf.nn.relu(1 - (lambda_ - M*cumulative_sum)/norm_skip )
+    w = M*t*norm_skip
+    x = t
 
     lower = tf.concat([tf_soft_threshold(lambda_bar, W_abs_sorted), zeros], axis=1)
     idx = tf.reduce_sum(tf.cast(lower > w, dtype=tf.int32), axis=1)
 
     idx = tf.stack([tf.range(0, w.shape[0]), idx, ], axis=1)
 
-    w =  tf.gather_nd(w, idx)
+
+    w =  tf.expand_dims(tf.gather_nd(w, idx), axis=1)
+    x =  tf.expand_dims(tf.gather_nd(x, idx), axis=1)
 
     #skip_star = (1/M)*(tf.sign(skip)*tf.broadcast_to(tf.expand_dims(w,axis=1), skip.shape))
-    skip_star = (1/M)*((skip/tf.norm(skip,  ord=2))*tf.expand_dims(w,axis=1))
-    W_star = tf.sign(W)*tf.math.minimum(tf.expand_dims(w,axis=1), tf.abs(W))
+ 
+    skip_star = skip*x
+    W_star = tf.sign(W)*tf.math.minimum(w, tf.abs(W))
 
     return skip_star, W_star
