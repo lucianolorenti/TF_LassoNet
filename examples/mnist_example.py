@@ -1,22 +1,16 @@
-from tf_lassonet.path import LassoPath
-from tf_lassonet.model import LassoNet
-from typing import Optional, List
-import tensorflow as tf
-from tensorflow.keras.layers import Dense, Flatten, Reshape, InputLayer
-from tensorflow.keras import Model, Sequential
-import numpy as np
+import matplotlib.pyplot as plt
 import tensorflow as tf
 import tensorflow_datasets as tfds
-import matplotlib.pyplot as plt
-from dataclasses import dataclass
-
+from tensorflow.keras import Sequential
+from tensorflow.keras.layers import Conv2D, Dense, Flatten, InputLayer
+from tf_lassonet.model import LassoNet
+from tf_lassonet.path import LassoPath
 
 model = Sequential(
     [
-        InputLayer((28, 28, 1)),
+        InputLayer((28, 28, 1)),        
+        Conv2D(5, (3,3), activation="relu", name="conv"),
         Flatten(),
-        Dense(16, activation="relu", name="layer1"),
-        
         Dense(2, name="layer4"),
     ]
 )
@@ -55,7 +49,7 @@ ds_train = (
     .map(to_binary)
     .cache()
     .shuffle(ds_info.splits["train"].num_examples)
-    .batch(len(ds_train))
+    .batch(2048)
     .prefetch(tf.data.experimental.AUTOTUNE)
 )
 
@@ -63,7 +57,7 @@ ds_test = (
     ds_test.filter(keep_5_and_6)
     .map(normalize_img, num_parallel_calls=tf.data.experimental.AUTOTUNE)
     .map(to_binary)
-    .batch(len(ds_test))
+    .batch(2048)
     .cache()
     .prefetch(tf.data.experimental.AUTOTUNE)
 )
@@ -74,16 +68,13 @@ path = LassoPath(
     path_multiplier=1.1
  
 )
-h = path.fit(ds_train, ds_test)
+path.lassonet.compile(
+    optimizer=tf.keras.optimizers.Adam(0.0001),
+    loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+    metrics=[tf.keras.metrics.SparseCategoricalAccuracy()],
+)
+h = path.fit(ds_train, ds_test, verbose=True)
 
 
 
 
-theta = lassonet.theta.weights[0].numpy().reshape(28, 28)
-plt.imshow(theta)
-plt.show()
-img = qqq[0][3, :, :, 0] / 255.0
-fig, ax = plt.subplots(1, 2)
-ax[0].imshow(theta * img)
-ax[1].imshow(img)
-fig.show()
