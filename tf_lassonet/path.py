@@ -1,9 +1,9 @@
 from tf_lassonet.model import LassoNet
 from typing import Optional, List
-import tensorflow as tf
 from dataclasses import dataclass
 from tensorflow.keras.callbacks import EarlyStopping
-import numpy as np 
+import numpy as np
+from tqdm.auto import tqdm
 
 
 @dataclass
@@ -18,6 +18,7 @@ class HistoryItem:
     selected_features: np.ndarray
     n_iters: int
 
+
 def compute_feature_importances(path: List[HistoryItem]):
     """When does each feature disappear on the path?
     Parameters
@@ -29,13 +30,13 @@ def compute_feature_importances(path: List[HistoryItem]):
     """
 
     current = path[0].selected_features.clone()
-    ans = np.fill(path[0].selected_features)     
+    ans = np.fill(path[0].selected_features)
     for save in path[1:]:
         lambda_ = save.lambda_
         diff = current & ~save.selected_features
         ans[diff.nonzero().flatten()] = lambda_
         current &= save.selected
-    return ans  
+    return ans
 
 
 class LambdaSequence:
@@ -64,16 +65,12 @@ class LassoPath:
         patience_path: int,
         lambda_seq: Optional[List[float]] = None,
         lambda_start: Optional[float] = None,
-        path_multiplier:float=1.02,
-        M:float=10,
-        eps_start:float=1,
+        path_multiplier: float = 1.02,
+        M: float = 10,
+        eps_start: float = 1,
     ):
         self.lassonet = LassoNet(model, M=M)
-        self.lassonet.compile(
-            optimizer=tf.keras.optimizers.Adam(0.0001),
-            loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
-            metrics=[tf.keras.metrics.SparseCategoricalAccuracy()],
-        )
+
 
         self.n_iters_init = n_iters_init
         self.patience_init = patience_init
@@ -83,7 +80,6 @@ class LassoPath:
         self.lambda_start = lambda_start
         self.path_multiplier = path_multiplier
         self.eps_start = eps_start
-   
 
     def lambda_sequences(self, history: List[HistoryItem]):
         lambda_seq = self.lambda_seq
@@ -99,7 +95,7 @@ class LassoPath:
             return lambda_seq
 
     def fit_one_model(self, train_dataset, val_dataset, *, lambda_) -> HistoryItem:
-        self.lassonet.lambda_.assign( lambda_)
+        self.lassonet.lambda_.assign(lambda_)
 
         history = self.lassonet.fit(
             train_dataset,
@@ -108,7 +104,7 @@ class LassoPath:
             callbacks=[EarlyStopping(patience=self.patience_init)],
             verbose=False,
         )
-       
+
         reg = self.lassonet.regularization()
         return HistoryItem(
             lambda_=lambda_,
@@ -116,38 +112,51 @@ class LassoPath:
             objective=history.history["loss"][-1] + lambda_ * reg,
             val_loss=history.history["val_loss"][-1],
             val_objective=history.history["val_loss"][-1] + lambda_ * reg,
-            regularization=reg,
+            regularization=reg.numpy(),
             n_iters=len(history.history["loss"]),
-            n_selected_features=self.lassonet.selected_count(),
-            selected_features=self.lassonet.input_mask()
+            n_selected_features=self.lassonet.selected_count().numpy(),
+            selected_features=self.lassonet.input_mask().numpy(),
         )
 
-    def report(self, h):
-        print(f"""Val Loss: {h.val_loss:.3} | Selected features: {h.n_selected_features} | Regularization: {h.regularization} """)
-        
+    def _update_bar(self, i:int, bar, h, lambda_:float):
+        bar.update(1)
+        bar.set_postfix(
+            {
+                "Lambda": lambda_,
+                "Val loss": h.val_loss,
+                "Selected features": h.n_selected_features,
+                "Regularization": h.regularization,
+            }
+        ),
 
     def fit(
-        self,  train_dataset, val_dataset
+        self, train_dataset, val_dataset, verbose: bool = False
     ) -> List[HistoryItem]:
         self.history = []
-        print(f'Lambda: {0}')           
-        self.history.append(self.fit_one_model(train_dataset, val_dataset, lambda_=0))
-        self.report(self.history[-1])
-        
+        if verbose:
+            bar = tqdm()
+            bar.update(0)
 
-        for current_lambda in self.lambda_sequences(self.history):
-            if self.lassonet.selected_count()[0] == 0:
-                break
-            print(f'Lambda: {current_lambda}')           
+        h = self.fit_one_model(train_dataset, val_dataset, lambda_=0)
+        self.history.append(h)
 
-    
+        if verbose:
+            self._update_bar(1, bar, h, 0)
+
+        for i, current_lambda in enumerate(self.lambda_sequences(self.history)):
+
             h = self.fit_one_model(train_dataset, val_dataset, lambda_=current_lambda)
-            self.report(h)
             self.history.append(h)
+            finalize = self.lassonet.selected_count()[0] == 0
+            if verbose:
+                self._update_bar(i+2, bar, h, current_lambda)                
+                if finalize:
+                    bar.close()
+                
+            if finalize:                
+                break
         return self.history
 
-
-    
     def compute_feature_importances(self):
         """When does each feature disappear on the path?
         Parameters
@@ -158,6 +167,3 @@ class LassoPath:
             feature_importances_
         """
         return compute_feature_importance(self.history)
-        
-
-      
