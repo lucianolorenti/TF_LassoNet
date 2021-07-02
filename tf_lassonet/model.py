@@ -61,7 +61,6 @@ class LassoNet(tf.keras.Model):
         self.W.weights[0].assign(W_star)
 
     def train_step(self, data):
-        x, y = data
         if len(data) == 3:
             x, y, sample_weight = data
         else:
