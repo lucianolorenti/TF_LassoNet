@@ -94,7 +94,7 @@ class LassoPath:
         else:
             return lambda_seq
 
-    def fit_one_model(self, train_dataset, val_dataset, *, lambda_) -> HistoryItem:
+    def fit_one_model(self, train_dataset, val_dataset, *, lambda_, **kwargs) -> HistoryItem:
         self.lassonet.lambda_.assign(lambda_)
 
         history = self.lassonet.fit(
@@ -102,7 +102,8 @@ class LassoPath:
             validation_data=val_dataset,
             epochs=self.n_iters_init,
             callbacks=[EarlyStopping(patience=self.patience_init)],
-            verbose=False,
+            verbose=True,
+            **kwargs
         )
 
         reg = self.lassonet.regularization()
@@ -130,14 +131,15 @@ class LassoPath:
         ),
 
     def fit(
-        self, train_dataset, val_dataset, verbose: bool = False
+        self, train_dataset, val_dataset, verbose: bool = False,
+        **kwargs
     ) -> List[HistoryItem]:
         self.history = []
         if verbose:
             bar = tqdm()
             bar.update(0)
 
-        h = self.fit_one_model(train_dataset, val_dataset, lambda_=0)
+        h = self.fit_one_model(train_dataset, val_dataset, lambda_=0, **kwargs)
         self.history.append(h)
 
         if verbose:
@@ -145,7 +147,7 @@ class LassoPath:
 
         for i, current_lambda in enumerate(self.lambda_sequences(self.history)):
 
-            h = self.fit_one_model(train_dataset, val_dataset, lambda_=current_lambda)
+            h = self.fit_one_model(train_dataset, val_dataset, lambda_=current_lambda, **kwargs)
             self.history.append(h)
             finalize = self.lassonet.selected_count()[0] == 0
             if verbose:
