@@ -8,10 +8,6 @@ import tensorflow as tf
 
 from dataclasses import dataclass
 
-from torch.nn import functional as F
-
-
-
 
 class LassoNet(tf.keras.Model):
     def __init__(self, model: Model, lambda_: float = 1.0, M:float=1, group:bool=True):

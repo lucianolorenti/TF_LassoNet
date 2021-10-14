@@ -17,6 +17,7 @@ class HistoryItem:
     n_selected_features: int
     selected_features: np.ndarray
     n_iters: int
+    test_predictions: np.ndarray
 
 
 def compute_feature_importances(path: List[HistoryItem]):
@@ -29,13 +30,13 @@ def compute_feature_importances(path: List[HistoryItem]):
         feature_importances_
     """
 
-    current = path[0].selected_features.clone()
-    ans = np.fill(path[0].selected_features)
+    current = path[0].selected_features.copy()
+    ans = ans = np.full(current.shape, float("inf"))
     for save in path[1:]:
         lambda_ = save.lambda_
         diff = current & ~save.selected_features
-        ans[diff.nonzero().flatten()] = lambda_
-        current &= save.selected
+        ans[diff.nonzero()] = lambda_
+        current &= save.selected_features
     return ans
 
 
@@ -68,9 +69,9 @@ class LassoPath:
         path_multiplier: float = 1.02,
         M: float = 10,
         eps_start: float = 1,
+        restore_best_weights: bool = False,
     ):
         self.lassonet = LassoNet(model, M=M)
-
 
         self.n_iters_init = n_iters_init
         self.patience_init = patience_init
@@ -80,6 +81,7 @@ class LassoPath:
         self.lambda_start = lambda_start
         self.path_multiplier = path_multiplier
         self.eps_start = eps_start
+        self.restore_best_weights = restore_best_weights
 
     def lambda_sequences(self, history: List[HistoryItem]):
         lambda_seq = self.lambda_seq
@@ -94,32 +96,45 @@ class LassoPath:
         else:
             return lambda_seq
 
-    def fit_one_model(self, train_dataset, val_dataset, *, lambda_, **kwargs) -> HistoryItem:
+    def fit_one_model(
+        self, train_dataset, val_dataset, *, test_dataset=None, lambda_, **kwargs
+    ) -> HistoryItem:
         self.lassonet.lambda_.assign(lambda_)
 
         history = self.lassonet.fit(
             train_dataset,
             validation_data=val_dataset,
             epochs=self.n_iters_init,
-            callbacks=[EarlyStopping(patience=self.patience_init)],
+            callbacks=[
+                EarlyStopping(
+                    patience=self.patience_init,
+                    restore_best_weights=self.restore_best_weights,
+                )
+            ],
             verbose=True,
             **kwargs
         )
 
         reg = self.lassonet.regularization()
+        val_loss = self.lassonet.evaluate(val_dataset)
+
+        test_predictions = None
+        if test_dataset is not None:            
+            test_predictions = self.lassonet.predict(test_dataset)
         return HistoryItem(
             lambda_=lambda_,
             loss=history.history["loss"][-1],
             objective=history.history["loss"][-1] + lambda_ * reg,
-            val_loss=history.history["val_loss"][-1],
-            val_objective=history.history["val_loss"][-1] + lambda_ * reg,
+            val_loss=val_loss,
+            val_objective=val_loss + lambda_ * reg,
             regularization=reg.numpy(),
             n_iters=len(history.history["loss"]),
             n_selected_features=self.lassonet.selected_count().numpy(),
             selected_features=self.lassonet.input_mask().numpy(),
+            test_predictions=test_predictions
         )
 
-    def _update_bar(self, i:int, bar, h, lambda_:float):
+    def _update_bar(self, i: int, bar, h, lambda_: float):
         bar.update(1)
         bar.set_postfix(
             {
@@ -131,8 +146,7 @@ class LassoPath:
         ),
 
     def fit(
-        self, train_dataset, val_dataset, verbose: bool = False,
-        **kwargs
+        self, train_dataset, val_dataset, verbose: bool = False, **kwargs
     ) -> List[HistoryItem]:
         self.history = []
         if verbose:
@@ -147,15 +161,17 @@ class LassoPath:
 
         for i, current_lambda in enumerate(self.lambda_sequences(self.history)):
 
-            h = self.fit_one_model(train_dataset, val_dataset, lambda_=current_lambda, **kwargs)
+            h = self.fit_one_model(
+                train_dataset, val_dataset, lambda_=current_lambda, **kwargs
+            )
             self.history.append(h)
             finalize = self.lassonet.selected_count()[0] == 0
             if verbose:
-                self._update_bar(i+2, bar, h, current_lambda)                
+                self._update_bar(i + 2, bar, h, current_lambda)
                 if finalize:
                     bar.close()
-                
-            if finalize:                
+
+            if finalize:
                 break
         return self.history
 
@@ -168,4 +184,4 @@ class LassoPath:
         -------
             feature_importances_
         """
-        return compute_feature_importance(self.history)
+        return compute_feature_importances(self.history)
