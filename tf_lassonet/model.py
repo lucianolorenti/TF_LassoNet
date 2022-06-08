@@ -10,22 +10,20 @@ from dataclasses import dataclass
 
 
 class LassoNet(tf.keras.Model):
-    def __init__(self, model: Model, lambda_: float = 1.0, M:float=1, group:bool=True):
+    def __init__(self, model: Model, lambda_: float = 1.0, M:float=1):
         super().__init__()
         self.model = model
         input_n_dim = np.prod(self.model.input.shape[1:])
         output_dim = np.prod(model.layers[-1].output_shape[1:])
 
-        if group:
-            self.skip = Dense(output_dim, use_bias=False)
-        else:
-            self.skip = Dense(1, use_bias=False)
+       
+        self.skip = Dense(output_dim, use_bias=False)
+      
 
         self.W = Dense(input_n_dim, use_bias=False)
         self.lambda_ = tf.Variable(lambda_, trainable=False)
         self.M = M
-        self.group = group
-
+       
 
     def regularization(self):
         return tf.math.reduce_sum(tf.norm(self.skip.weights, ord='euclidean', axis=2))
@@ -39,17 +37,15 @@ class LassoNet(tf.keras.Model):
     def test_step(self, data):
         return super().test_step(data)
 
-    def proximal_update(self):
-        if self.group:
-            skip_star, W_star = hier_prox_group(
-                self.skip.weights[0],
-                self.W.weights[0],
-                lambda_=self.optimizer.learning_rate * self.lambda_,
-                lambda_bar=0,
-                M=self.M,
-            )
-        else:
-            pass
+    def proximal_update(self):      
+        skip_star, W_star = hier_prox_group(
+            self.skip.weights[0],
+            self.W.weights[0],
+            lambda_=self.optimizer.learning_rate * self.lambda_,
+            lambda_bar=0,
+            M=self.M,
+        )
+
 
 
         self.skip.weights[0].assign(skip_star)
@@ -62,7 +58,7 @@ class LassoNet(tf.keras.Model):
         else:
             sample_weight = None
             x, y = data
-
+        
         with tf.GradientTape() as tape:
             y_pred = self(x, training=True)  
             loss = self.compiled_loss(
@@ -86,6 +82,40 @@ class LassoNet(tf.keras.Model):
         return d
         
         
+    def lambda_start(
+        self,
+        M=1,
+        lambda_bar=0,
+        factor=2,
+    ):
+        """Estimate when the model will start to sparsify."""
+
+        def is_sparse(lambda_):
+        
+            beta = self.skip.weights[0]
+            theta = self.W.weights[0]
+            
+            for _ in range(200):
+                new_beta, theta = hier_prox_group(
+                    beta,
+                    theta,
+                    lambda_=lambda_,
+                    lambda_bar=lambda_bar,
+                    M=M,
+                )
+         
+                if tf.math.reduce_max(tf.math.abs(beta - new_beta)) < 1e-5:
+                    break
+                beta = new_beta
+
+            v=  tf.math.reduce_sum(tf.cast((tf.norm(beta, ord=1, axis=0) == 0), tf.float32)).numpy()
+ 
+            return v != 0
+
+        start = 1e-6
+        while not is_sparse(factor * start):
+            start *= factor
+        return start
 
     def call(self, inputs):
         input_shape = inputs.shape[1:]

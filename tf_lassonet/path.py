@@ -1,5 +1,5 @@
 from tf_lassonet.model import LassoNet
-from typing import Optional, List
+from typing import Optional, List, Union
 from dataclasses import dataclass
 from tensorflow.keras.callbacks import EarlyStopping
 import numpy as np
@@ -18,6 +18,7 @@ class HistoryItem:
     selected_features: np.ndarray
     n_iters: int
     test_predictions: np.ndarray
+    weights: any
 
 
 def compute_feature_importances(path: List[HistoryItem]):
@@ -52,6 +53,7 @@ class LambdaSequence:
 
     def __next__(self):
         r = self.curr_value
+
         self.curr_value *= self.multiplier
         return r
 
@@ -65,11 +67,11 @@ class LassoPath:
         n_iters_path: int,
         patience_path: int,
         lambda_seq: Optional[List[float]] = None,
-        lambda_start: Optional[float] = None,
+        lambda_start: Optional[Union[float, str]] = None,
         path_multiplier: float = 1.02,
         M: float = 10,
-        eps_start: float = 1,
         restore_best_weights: bool = False,
+        store_weights: bool = True
     ):
         self.lassonet = LassoNet(model, M=M)
 
@@ -80,43 +82,53 @@ class LassoPath:
         self.lambda_seq = lambda_seq
         self.lambda_start = lambda_start
         self.path_multiplier = path_multiplier
-        self.eps_start = eps_start
+        self.M = M
+        
         self.restore_best_weights = restore_best_weights
+        self.store_weights = store_weights
 
-    def lambda_sequences(self, history: List[HistoryItem]):
+
+
+    def lambda_sequences(self):
         lambda_seq = self.lambda_seq
         if lambda_seq is None:
-            start = (
-                self.lambda_start
-                if self.lambda_start is not None
-                else (self.eps_start * history[-1].val_loss)
-            )
-            return LambdaSequence(start, self.path_multiplier)
+            if isinstance(self.lambda_start, str):
+                if self.lambda_start == 'auto':
+                    self.lambda_start = (
+                        self.lassonet.lambda_start(M=self.M)
+                        / self.lassonet.optimizer.learning_rate.numpy()
+                        / 10
+                    )
+
+                else:
+                    raise ValueError("Invalid lambda_start value, should be auto or a number")
+
+            return LambdaSequence(self.lambda_start, self.path_multiplier)
 
         else:
             return lambda_seq
 
     def fit_one_model(
-        self, train_dataset, val_dataset, *, test_dataset=None, lambda_, **kwargs
+        self, train_dataset, val_dataset, *, epochs:int, test_dataset=None, lambda_,  **kwargs
     ) -> HistoryItem:
         self.lassonet.lambda_.assign(lambda_)
 
         history = self.lassonet.fit(
             train_dataset,
             validation_data=val_dataset,
-            epochs=self.n_iters_init,
+            epochs=epochs,
             callbacks=[
                 EarlyStopping(
                     patience=self.patience_init,
                     restore_best_weights=self.restore_best_weights,
                 )
             ],
-            verbose=True,
+            verbose=False,
             **kwargs
         )
 
         reg = self.lassonet.regularization()
-        val_loss = self.lassonet.evaluate(val_dataset)
+        val_loss = self.lassonet.evaluate(val_dataset, verbose=False)
 
         test_predictions = None
         if test_dataset is not None:            
@@ -131,16 +143,17 @@ class LassoPath:
             n_iters=len(history.history["loss"]),
             n_selected_features=self.lassonet.selected_count().numpy(),
             selected_features=self.lassonet.input_mask().numpy(),
-            test_predictions=test_predictions
+            test_predictions=test_predictions,
+            weights=self.lassonet.get_weights() if self.store_weights else None
         )
 
-    def _update_bar(self, i: int, bar, h, lambda_: float):
+    def _update_bar(self,  bar, h, lambda_: float):
         bar.update(1)
         bar.set_postfix(
             {
                 "Lambda": lambda_,
-                "Val loss": h.val_loss,
-                "Selected features": h.n_selected_features,
+                "Val loss": h.val_loss[0],
+                "Selected features": h.n_selected_features[0],
                 "Regularization": h.regularization,
             }
         ),
@@ -153,21 +166,23 @@ class LassoPath:
             bar = tqdm()
             bar.update(0)
 
-        h = self.fit_one_model(train_dataset, val_dataset, lambda_=0, **kwargs)
+        h = self.fit_one_model(train_dataset, val_dataset, epochs=self.n_iters_init, lambda_=0, **kwargs)
         self.history.append(h)
 
         if verbose:
-            self._update_bar(1, bar, h, 0)
+            self._update_bar(bar, h, 0)
 
-        for i, current_lambda in enumerate(self.lambda_sequences(self.history)):
-
+        for i, current_lambda in enumerate(self.lambda_sequences()):
+            
             h = self.fit_one_model(
-                train_dataset, val_dataset, lambda_=current_lambda, **kwargs
+                train_dataset, val_dataset, epochs=self.n_iters_path, lambda_=current_lambda, **kwargs
             )
             self.history.append(h)
             finalize = self.lassonet.selected_count()[0] == 0
+            
             if verbose:
-                self._update_bar(i + 2, bar, h, current_lambda)
+            
+                self._update_bar( bar, h, current_lambda)
                 if finalize:
                     bar.close()
 
